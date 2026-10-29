@@ -1,0 +1,24 @@
+name: Bug report
+description: Something crashed, or the output is wrong.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Command and (redacted) log lines to reproduce
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Output of `explainfail --version` and `python --version`
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: "Never paste real passwords, tokens or customer data. For security issues use the private form on the Security tab instead."

@@ -1,0 +1,8 @@
+2026-10-27 01:00:02 INFO  Starting nightly_etl run_id=8841
+2026-10-27 01:00:02 INFO  Connecting with password=Sup3rS3cret! to postgresql://etl:hunter2@db.internal:5432/sales
+2026-10-27 01:00:03 INFO  Loading config from /opt/etl/config.yaml
+Traceback (most recent call last):
+  File "/opt/etl/run.py", line 14, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+exit code: 1

@@ -1,0 +1,41 @@
+# Example of your own rules. Use them with:
+#
+#   explainfail analyze job.log --rules examples/custom_rules.yaml
+#   explainfail run --rules examples/custom_rules.yaml -- python etl.py
+#   export EXPLAINFAIL_RULES=/etc/explainfail/rules      # a folder of *.yaml also works
+#
+# Your rules always rank above the built-in ones. Reuse a built-in id to replace it.
+# Check this file (including the examples below) with:
+#   explainfail rules check examples/custom_rules.yaml
+
+rules:
+  - id: acme-partner-sftp-down
+    title: Partner SFTP server (ACME) is unreachable
+    category: network
+    severity: high
+    match: 'sftp\.acme-partner\.com.*(?:timed out|refused)'
+    notify: Integration team
+    explain: >-
+      The nightly file exchange with ACME could not connect to their SFTP server. This usually
+      means ACME is doing maintenance or a firewall rule changed on our side.
+    fix: |-
+      1. Check the ACME status page or email thread for planned maintenance.
+      2. From the job server run: sftp -v sftp.acme-partner.com
+      3. If it still fails, contact the Integration team before rerunning the job.
+    examples:
+      - "ssh: connect to host sftp.acme-partner.com port 22: Connection timed out"
+
+  - id: finance-month-end-lock
+    title: Finance month-end close is running
+    category: general
+    severity: low
+    match: 'GL_PERIOD_LOCKED'
+    notify: Finance systems
+    explain: >-
+      The ledger period is locked while month-end close runs, so postings are refused until it is
+      finished.
+    fix: >-
+      Wait for Finance to reopen the period (normally by 08:00) and then rerun. Do not force the
+      load.
+    examples:
+      - "ERROR GL_PERIOD_LOCKED: period 2026-10 is closed for posting"

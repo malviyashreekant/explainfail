@@ -1,0 +1,13 @@
+# Edit with: crontab -e
+#
+# Wrap the command with `explainfail run`. If the job fails, the explanation is printed (cron
+# mails output to MAILTO by default) and the original exit code is kept.
+
+MAILTO=ops@example.com
+EXPLAINFAIL_SLACK_WEBHOOK=https://hooks.slack.com/services/REPLACE/ME
+
+# Every night at 02:00
+0 2 * * *  explainfail run --job nightly_backup -- /opt/scripts/backup.sh
+
+# Already have a log file? Analyse it after the fact:
+#   explainfail analyze /var/log/backup.log --job nightly_backup

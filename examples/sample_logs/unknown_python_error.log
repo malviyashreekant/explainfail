@@ -1,0 +1,7 @@
+2026-10-27 04:00:00 INFO  Running report
+Traceback (most recent call last):
+  File "/opt/reports/build.py", line 52, in <module>
+    total = compute(rows)
+  File "/opt/reports/build.py", line 31, in compute
+    return rows[0]["amount"] * rate
+ArithmeticError: rate table is inconsistent for 2026-10

@@ -1,0 +1,30 @@
+name: Rule request (a failure explainfail should recognise)
+description: Share a failure that is missing or explained badly. Good first issue material.
+labels: ["rule", "good first issue"]
+body:
+  - type: textarea
+    id: log
+    attributes:
+      label: Log lines that identify the failure
+      description: Paste 1-10 lines. Remove passwords, tokens, hostnames and personal data first.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: meaning
+    attributes:
+      label: What does it actually mean, and how do you fix it?
+      description: Plain English is perfect. If you can, say who usually needs to be told.
+    validations:
+      required: true
+  - type: input
+    id: tool
+    attributes:
+      label: Where did it happen?
+      placeholder: "Control-M, Airflow, cron, Python 3.11, Oracle, ..."
+  - type: checkboxes
+    id: pr
+    attributes:
+      label: Contribution
+      options:
+        - label: I can open a pull request adding this rule (see CONTRIBUTING.md)

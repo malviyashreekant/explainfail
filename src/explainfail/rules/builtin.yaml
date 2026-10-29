@@ -1,0 +1,1041 @@
+# explainfail built-in rules
+#
+# Fields
+#   id         unique, lowercase (a rule with the same id in your own file replaces this one)
+#   title      short plain-English headline
+#   category   python | system | network | database | cloud | auth | java | container | windows
+#   severity   low | medium | high | critical
+#   priority   higher wins when several rules match (specific ~70, generic ~40, exit-code only ~20)
+#   match      regex or list of regexes, searched per line (\x27 means an apostrophe)
+#   exit_codes optional list of process exit codes that also trigger the rule
+#   explain    what happened, in plain English. {name} inserts the regex group (?P<name>...)
+#   fix        what to do about it
+#   notify     who usually needs to know
+#   examples   sample log lines that MUST match (checked by the test suite)
+
+rules:
+  # ---------------------------------------------------------------- Python
+  - id: py-module-not-found
+    title: Python package is not installed
+    category: python
+    severity: medium
+    priority: 70
+    match: 'ModuleNotFoundError: No module named \x27(?P<module>[^\x27]+)\x27'
+    notify: job owner / developer
+    explain: >-
+      The script tried to import the Python module "{module}", but it is not installed in the
+      Python environment that ran the job.
+    fix: >-
+      Install it into the same environment the job runs in (for example: pip install {module}; the
+      pip package name can differ from the module name, e.g. module "yaml" is package "PyYAML").
+      Also check that the scheduler uses the right Python or virtualenv, because it is often
+      different from the one you use interactively.
+    examples:
+      - "ModuleNotFoundError: No module named 'pandas'"
+
+  - id: py-import-name
+    title: Python cannot import a name from a module
+    category: python
+    severity: medium
+    priority: 70
+    match: 'ImportError: cannot import name \x27(?P<name>[^\x27]+)\x27'
+    notify: job owner / developer
+    explain: >-
+      The module was found, but it does not contain "{name}". This usually means the installed
+      version of a package is older or newer than the code expects, or two files import each other
+      (a circular import).
+    fix: >-
+      Compare installed versions (pip list) with the project requirements and upgrade or pin the
+      package. If the module is your own code, look for a circular import.
+    examples:
+      - "ImportError: cannot import name 'soft_unicode' from 'markupsafe'"
+
+  - id: py-syntax-error
+    title: Python code has a syntax or indentation error
+    category: python
+    severity: medium
+    priority: 70
+    match: '\b(?:SyntaxError|IndentationError|TabError)\b'
+    notify: developer
+    explain: >-
+      Python could not read the script because of a typo, wrong indentation, or syntax that the
+      Python version running the job does not support. The script never actually started.
+    fix: >-
+      Open the file and line shown just above the error. If the code was not edited recently,
+      check that the job runs with the expected Python version (python --version).
+    examples:
+      - "SyntaxError: invalid syntax"
+      - "IndentationError: unexpected indent"
+
+  - id: py-key-error
+    title: Expected key or column is missing from the data
+    category: python
+    severity: medium
+    priority: 65
+    match: '\bKeyError: (?P<key>[^\r\n]+)'
+    notify: job owner / data provider
+    explain: >-
+      The code looked up {key} in a dictionary, JSON object or table, but it was not there. Most
+      often the input data changed: a renamed or missing column, a field the API stopped sending,
+      or an empty file.
+    fix: >-
+      Check the input data (file, API response or query result) for {key}. Compare with a previous
+      successful run to see what changed upstream.
+    examples:
+      - "KeyError: 'customer_id'"
+
+  - id: py-attribute-error
+    title: Code used something that does not exist on a value
+    category: python
+    severity: medium
+    priority: 65
+    match: 'AttributeError: \x27(?P<obj>[^\x27]+)\x27 object has no attribute \x27(?P<attr>[^\x27]+)\x27'
+    notify: developer
+    explain: >-
+      The code tried to use "{attr}" on a value of type "{obj}", which does not have it. If the
+      type is NoneType, an earlier step returned nothing (an empty query, a missing file, a failed
+      lookup) and the code carried on as if it had data.
+    fix: >-
+      Find what produced the value just before the failing line and check why it was empty or
+      the wrong type. Look at the input data of this run.
+    examples:
+      - "AttributeError: 'NoneType' object has no attribute 'group'"
+
+  - id: py-none-type
+    title: A value was empty (None) where data was expected
+    category: python
+    severity: medium
+    priority: 60
+    match: 'TypeError: [^\r\n]*\bNoneType\b'
+    notify: developer
+    explain: >-
+      Some step returned nothing (None), and the next step tried to use it like real data. The root
+      cause is usually earlier: an empty query result, a missing file or a failed lookup.
+    fix: >-
+      Look at what the failing line receives and trace back to where it should have been filled in.
+    examples:
+      - "TypeError: 'NoneType' object is not subscriptable"
+
+  - id: py-value-convert
+    title: Text could not be converted to a number
+    category: python
+    severity: medium
+    priority: 65
+    match: 'ValueError: (?:could not convert string to float|invalid literal for int\(\) with base \d+): (?P<value>[^\r\n]+)'
+    notify: job owner / data provider
+    explain: >-
+      The data contained {value} where a number was expected. Typical causes are blanks, "N/A",
+      thousands separators, or an extra header or footer line in the file.
+    fix: >-
+      Find the offending row in the input data and fix the source, or make the code handle blanks
+      and bad values explicitly.
+    examples:
+      - "ValueError: could not convert string to float: 'N/A'"
+      - "ValueError: invalid literal for int() with base 10: ''"
+
+  - id: py-file-not-found
+    title: A required file or folder does not exist
+    category: python
+    severity: medium
+    priority: 70
+    match: 'FileNotFoundError: \[Errno 2\] No such file or directory: \x27(?P<path>[^\x27]+)\x27'
+    notify: job owner / upstream team
+    explain: >-
+      The job needed "{path}" but it does not exist. Common reasons: an upstream job has not
+      delivered the file yet, the path is wrong for this server, or a relative path is resolved
+      from a different working directory than expected.
+    fix: >-
+      Check whether the file exists (ls / dir) and whether the upstream job or transfer finished.
+      Use absolute paths in scheduled jobs.
+    examples:
+      - "FileNotFoundError: [Errno 2] No such file or directory: '/data/in/orders.csv'"
+
+  - id: py-permission-error
+    title: Not allowed to read or write a file
+    category: python
+    severity: medium
+    priority: 70
+    match: 'PermissionError: \[Errno 13\]'
+    notify: system administrator
+    explain: >-
+      The account that runs the job does not have permission to read or write the file or folder
+      named in the error. Jobs often run as a different user than the one you test with.
+    fix: >-
+      Check the file's owner and permissions (ls -l) and which user the scheduler runs the job as.
+      Grant that user access, or write to a folder it owns.
+    examples:
+      - "PermissionError: [Errno 13] Permission denied: '/var/log/app.log'"
+
+  - id: py-unicode
+    title: Text encoding problem (non-standard characters)
+    category: python
+    severity: low
+    priority: 70
+    match: 'Unicode(?:Decode|Encode)Error'
+    notify: developer
+    explain: >-
+      The data contains characters that do not match the encoding the script expects. This is
+      common with files exported from Excel or Windows systems and with non-English names.
+    fix: >-
+      Open the file with the right encoding (for example encoding="cp1252" or "latin-1", or
+      encoding="utf-8", errors="replace"). For output problems in schedulers, set
+      PYTHONIOENCODING=utf-8.
+    examples:
+      - "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xe9 in position 12: invalid continuation byte"
+
+  - id: py-memory-error
+    title: Python ran out of memory
+    category: python
+    severity: high
+    priority: 70
+    match: '\bMemoryError\b'
+    notify: job owner / infrastructure
+    explain: >-
+      The script tried to hold more data in memory than the server allows. Usually the input has
+      grown, or the code loads a whole file or table at once.
+    fix: >-
+      Process the data in chunks, filter earlier, or run on a machine with more memory. Compare
+      today's input size with a successful run.
+    examples:
+      - "MemoryError"
+
+  - id: py-zero-division
+    title: Division by zero
+    category: python
+    severity: medium
+    priority: 65
+    match: 'ZeroDivisionError'
+    notify: developer
+    explain: >-
+      The code divided by zero, typically because a total or count was 0 on this run (for example,
+      an empty input).
+    fix: >-
+      Check whether the input data is empty or incomplete. The code should handle the zero case.
+    examples:
+      - "ZeroDivisionError: division by zero"
+
+  - id: py-json-decode
+    title: Response or file is not valid JSON
+    category: python
+    severity: medium
+    priority: 65
+    match: 'JSONDecodeError'
+    notify: job owner / data provider
+    explain: >-
+      The code expected JSON but received something else: an empty response, a cut-off file, or an
+      HTML error page returned by a web service.
+    fix: >-
+      Print or save the raw response or file and look at its first lines. If it is an HTML page,
+      the service returned an error (login, outage or wrong URL).
+    examples:
+      - "json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)"
+
+  - id: py-empty-data
+    title: Input file is empty
+    category: python
+    severity: medium
+    priority: 65
+    match: ['EmptyDataError', 'No columns to parse from file']
+    notify: job owner / upstream team
+    explain: >-
+      The job tried to read a data file that has no content. The upstream job probably produced an
+      empty file or has not finished writing it.
+    fix: >-
+      Check the file size and the upstream job's status and timing.
+    examples:
+      - "pandas.errors.EmptyDataError: No columns to parse from file"
+
+  - id: py-recursion
+    title: Code called itself too many times (recursion limit)
+    category: python
+    severity: medium
+    priority: 65
+    match: 'RecursionError: maximum recursion depth exceeded'
+    notify: developer
+    explain: >-
+      A function kept calling itself without stopping, or the data is nested deeper than expected.
+    fix: >-
+      Look at the repeating lines in the traceback to see which function loops. This is a code bug
+      that a developer needs to fix.
+    examples:
+      - "RecursionError: maximum recursion depth exceeded while calling a Python object"
+
+  # ---------------------------------------------------------------- System
+  - id: oom-killed
+    title: Process was killed, most likely out of memory
+    category: system
+    severity: high
+    priority: 70
+    match:
+      - '(?i)out of memory|oom[- ]kill|cannot allocate memory|OutOfMemoryError|GC overhead limit exceeded|Java heap space'
+      - '(?m)^(?:.*: )?Killed\s*$'
+    exit_codes: [137]
+    notify: infrastructure / job owner
+    explain: >-
+      The job was stopped by the operating system (or container platform) because the machine ran
+      out of memory. Exit code 137 and a bare "Killed" message are the usual signs. Less often, 137
+      means someone or something sent kill -9 on purpose.
+    fix: >-
+      Compare input size and memory use with a previous successful run. Reduce memory use
+      (process in chunks), raise the memory limit, or run the job when the server is less busy.
+      Check system logs (dmesg, journalctl) for "oom".
+    examples:
+      - "Killed"
+      - "java.lang.OutOfMemoryError: Java heap space"
+      - "OSError: [Errno 12] Cannot allocate memory"
+
+  - id: segfault
+    title: Program crashed (segmentation fault)
+    category: system
+    severity: high
+    priority: 70
+    match: 'Segmentation fault|SIGSEGV'
+    exit_codes: [139]
+    notify: developer / system administrator
+    explain: >-
+      The program touched memory it was not allowed to use and the operating system stopped it.
+      This is typically a bug or incompatibility in a compiled library, or a damaged installation.
+    fix: >-
+      Check whether a library or driver was recently upgraded, and try reinstalling it. Report it to
+      the vendor with the exact versions.
+    examples:
+      - "Segmentation fault (core dumped)"
+
+  - id: disk-full
+    title: Disk is full
+    category: system
+    severity: critical
+    priority: 75
+    match: 'No space left on device|\[Errno 28\]|ENOSPC|[Dd]isk quota exceeded'
+    notify: system administrator
+    explain: >-
+      There is no free space left on the disk (or the account's quota is used up), so the job could
+      not write its output, temp files or logs.
+    fix: >-
+      Free space right away (check with df -h, remove old logs and temp files) and rerun. Find out
+      what filled the disk, and set up cleanup or monitoring so it does not happen again.
+    examples:
+      - "OSError: [Errno 28] No space left on device"
+
+  - id: shell-crlf
+    title: Script has Windows line endings
+    category: system
+    severity: medium
+    priority: 80
+    match:
+      - 'bad interpreter'
+      - '\$\x27\\r\x27: command not found'
+    notify: developer
+    explain: >-
+      A shell script was saved with Windows-style line endings (CRLF). Linux reads the invisible
+      carriage return as part of each command, so nothing works.
+    fix: >-
+      Convert the file to Unix line endings (dos2unix script.sh, or sed -i 's/\r$//' script.sh)
+      and make sure the editor or Git does not convert them back.
+    examples:
+      - "/bin/bash^M: bad interpreter: No such file or directory"
+      - '$''\r'': command not found'
+
+  - id: cmd-not-found
+    title: A command or program was not found
+    category: system
+    severity: medium
+    priority: 70
+    match:
+      - '(?<![\w./+-])(?P<cmd>[\w./+-]+): (?:command )?not found'
+      - '(?<![\w./+-])\x27?(?P<cmd>[\w./+-]+)\x27? is not recognized as an internal or external command'
+    exit_codes: [127]
+    notify: system administrator / job owner
+    explain: >-
+      The job tried to run "{cmd}", but it is not installed or not on the PATH of the account that
+      runs scheduled jobs. Schedulers often start jobs with a much smaller PATH than your own
+      login shell.
+    fix: >-
+      Use the full path to the program in the job definition, or set PATH at the top of the script.
+      Check that the tool is installed on this server (which {cmd}).
+    examples:
+      - "bash: line 3: python3.12: command not found"
+      - "'sqlplus' is not recognized as an internal or external command"
+
+  - id: exit-126-not-executable
+    title: Command found but cannot be run
+    category: system
+    severity: medium
+    priority: 20
+    exit_codes: [126]
+    notify: system administrator
+    explain: >-
+      Exit code 126 means the file exists but could not be executed: it is missing the execute
+      permission, is not a real program, or is on a filesystem mounted as no-execute.
+    fix: >-
+      Check permissions (ls -l) and add execute permission (chmod +x file). Make sure the first line
+      of a script points to a valid interpreter.
+
+  - id: exit-124-timeout
+    title: Command was stopped by a time limit
+    category: system
+    severity: medium
+    priority: 20
+    exit_codes: [124]
+    notify: job owner
+    explain: >-
+      Exit code 124 is what the timeout command returns when it stops a program that ran too long.
+    fix: >-
+      Find out why the job is slower than normal (bigger input, slow database, waiting service) or
+      raise the limit if the new runtime is legitimate.
+
+  - id: exit-130-interrupted
+    title: Job was interrupted (Ctrl-C / SIGINT)
+    category: system
+    severity: low
+    priority: 20
+    exit_codes: [130]
+    notify: job owner
+    explain: >-
+      Exit code 130 means the process received an interrupt signal, as if someone pressed Ctrl-C.
+    fix: >-
+      Check whether someone cancelled the job or a session ended. If nobody did, look for a
+      scheduler or wrapper script that sends interrupts.
+
+  - id: exit-143-terminated
+    title: Job was told to stop (SIGTERM)
+    category: system
+    severity: medium
+    priority: 20
+    exit_codes: [143]
+    notify: job owner / scheduler admin
+    explain: >-
+      Exit code 143 means something asked the process to stop. Typical senders: the scheduler
+      (job cancelled, killed, or exceeded its maximum run time), a server restart or shutdown, or a
+      container being stopped.
+    fix: >-
+      Check the scheduler's history for a cancel or kill event and the job's maximum run time
+      setting. Check whether the server or container was restarted at that time.
+
+  - id: too-many-open-files
+    title: Too many open files
+    category: system
+    severity: medium
+    priority: 65
+    match: 'Too many open files|\[Errno 24\]|EMFILE'
+    notify: developer / system administrator
+    explain: >-
+      The process hit the operating system limit for open files or connections. Either the code
+      forgets to close files/connections, or the limit is set too low for this workload.
+    fix: >-
+      Make sure files and connections are closed (use "with" blocks). If the load is legitimate,
+      raise the limit (ulimit -n or the service's LimitNOFILE).
+    examples:
+      - "OSError: [Errno 24] Too many open files"
+
+  - id: read-only-fs
+    title: Filesystem is read-only
+    category: system
+    severity: high
+    priority: 65
+    match: 'Read-only file system|EROFS'
+    notify: system administrator
+    explain: >-
+      The job tried to write to a location that is mounted read-only, or the disk was remounted
+      read-only after an error.
+    fix: >-
+      Write to a different folder, or ask a system administrator to check the mount and the disk
+      health.
+    examples:
+      - "OSError: [Errno 30] Read-only file system: '/opt/app/out.csv'"
+
+  - id: permission-denied
+    title: Permission denied
+    category: system
+    severity: medium
+    priority: 40
+    match: '(?i)permission denied'
+    notify: system administrator
+    explain: >-
+      The account running the job is not allowed to do something it tried (open a file, run a
+      program, or connect). Jobs often run as a different user than your own login.
+    fix: >-
+      Find the path or resource in the evidence line, check its permissions, and confirm which user
+      the scheduler runs the job as.
+    examples:
+      - "cp: cannot create regular file '/data/out/a.csv': Permission denied"
+
+  - id: file-not-found
+    title: A file or folder was not found
+    category: system
+    severity: medium
+    priority: 40
+    match: 'No such file or directory'
+    notify: job owner / upstream team
+    explain: >-
+      The job referred to a file or folder that does not exist on this server at the time it ran.
+    fix: >-
+      Check the path in the evidence line, whether an upstream job produced the file, and whether
+      the path is correct on this server.
+    examples:
+      - "ls: cannot access '/data/in/file.csv': No such file or directory"
+
+  - id: timeout
+    title: Something took too long (timeout)
+    category: network
+    severity: medium
+    priority: 40
+    match: '(?i)\btimed? ?out\b|TimeoutError|Timeout expired|deadline exceeded|ETIMEDOUT'
+    notify: job owner / service owner
+    explain: >-
+      The job waited for something (a server, database, API or file) and gave up. The other side is
+      slow, overloaded, unreachable, or blocked by a firewall.
+    fix: >-
+      Check that the target service is up and responsive from this server. If it is just slow
+      today, rerun later or raise the timeout.
+    examples:
+      - "requests.exceptions.ReadTimeout: Read timed out. (read timeout=30)"
+
+  # --------------------------------------------------------------- Network
+  - id: conn-refused
+    title: Connection refused (service not listening)
+    category: network
+    severity: high
+    priority: 60
+    match: 'Connection refused|ConnectionRefusedError|\[Errno 111\]|ECONNREFUSED'
+    notify: service owner / infrastructure
+    explain: >-
+      The server was reached but nothing is accepting connections on that address and port. The
+      service is probably down or restarting, or the host or port is wrong.
+    fix: >-
+      Check that the service is running and listening on the expected port, and that the host and
+      port in the job configuration are right. Try from the job's server (telnet host port, or nc).
+    examples:
+      - "ConnectionRefusedError: [Errno 111] Connection refused"
+
+  - id: dns-failure
+    title: Server name could not be resolved (DNS)
+    category: network
+    severity: high
+    priority: 65
+    match: 'Name or service not known|getaddrinfo failed|Temporary failure in name resolution|NameResolutionError|UnknownHostException|nodename nor servname'
+    notify: network team
+    explain: >-
+      The job could not translate a server name into an address. The name is misspelled, the DNS
+      service is down, or the server has no network access.
+    fix: >-
+      Check the host name in the job configuration, then test it from the same server
+      (nslookup name). If many jobs fail this way, tell the network team.
+    examples:
+      - "socket.gaierror: [Errno -2] Name or service not known"
+
+  - id: ssl-cert
+    title: Security certificate problem
+    category: network
+    severity: high
+    priority: 65
+    match: 'CERTIFICATE_VERIFY_FAILED|certificate verify failed|PKIX path building failed|SSLCertVerificationError|x509: certificate'
+    notify: network / security team
+    explain: >-
+      The job does not trust the certificate presented by the remote server. The certificate may
+      have expired, be self-signed or signed by an internal authority the server does not know, or
+      a proxy may be intercepting traffic.
+    fix: >-
+      Check the certificate's expiry date and issuer. For an internal certificate authority, add its
+      certificate to the trust store used by the job. Do not turn verification off in production.
+    examples:
+      - "ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
+
+  - id: conn-reset
+    title: Connection dropped by the other side
+    category: network
+    severity: medium
+    priority: 55
+    match: 'Connection reset by peer|\[Errno 104\]|ECONNRESET|BrokenPipeError|Broken pipe'
+    notify: service owner
+    explain: >-
+      An established connection was cut off unexpectedly: the remote service restarted or crashed,
+      a firewall or load balancer closed an idle connection, or the network is unstable.
+    fix: >-
+      Rerun the job; if it is repeatable, check the remote service logs and any firewall or
+      load balancer idle timeouts. Add retries for long-running transfers.
+    examples:
+      - "ConnectionResetError: [Errno 104] Connection reset by peer"
+
+  - id: http-auth
+    title: Web service rejected the login or permissions (401/403)
+    category: auth
+    severity: high
+    priority: 65
+    match:
+      - '(?i)\b40[13] (?:Client Error: )?(?:Unauthorized|Forbidden)'
+      - '(?i)HTTP Error 40[13]'
+      - '(?i)HTTP/\d(?:\.\d)? 40[13]'
+    notify: job owner / service owner
+    explain: >-
+      The web service refused the request. 401 means the credentials are missing, wrong or expired;
+      403 means they are valid but not allowed to do this.
+    fix: >-
+      Check that the API key, token or password used by the job is current and has the right
+      permissions. Look for a recent rotation or expiry.
+    examples:
+      - "requests.exceptions.HTTPError: 401 Client Error: Unauthorized for url: https://api.example.com/v1/data"
+
+  - id: http-404
+    title: Web address or resource not found (404)
+    category: network
+    severity: medium
+    priority: 60
+    match: '(?i)\b404 (?:Client Error: )?Not Found|HTTP Error 404'
+    notify: job owner / service owner
+    explain: >-
+      The web service says the address does not exist. The URL is wrong, or the resource was moved
+      or deleted.
+    fix: >-
+      Open the URL from the log in a browser or with curl, and check the service documentation for
+      changes.
+    examples:
+      - "urllib.error.HTTPError: HTTP Error 404: Not Found"
+
+  - id: http-429
+    title: Too many requests (rate limited)
+    category: network
+    severity: medium
+    priority: 60
+    match: '(?i)\b429\b[^\r\n]{0,40}(?:Too Many Requests|rate limit)|Too Many Requests|rate limit exceeded'
+    notify: job owner
+    explain: >-
+      The service is limiting how fast the job may call it and refused further calls.
+    fix: >-
+      Slow the job down, add retries with waiting (backoff), or ask the provider for a higher limit.
+      Check for other jobs using the same key at the same time.
+    examples:
+      - "429 Client Error: Too Many Requests for url: https://api.example.com"
+
+  - id: http-5xx
+    title: Remote web service had an error (5xx)
+    category: network
+    severity: high
+    priority: 60
+    match:
+      - '(?i)\b50[0234] (?:Server Error: )?(?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)'
+      - '(?i)HTTP Error 50[0234]'
+    notify: service owner
+    explain: >-
+      The other service reported a problem on its own side (down, overloaded or crashing). The job
+      itself is probably fine.
+    fix: >-
+      Check the service's status page or contact its owner. Rerun later and consider adding
+      automatic retries.
+    examples:
+      - "503 Server Error: Service Unavailable for url: https://api.example.com"
+
+  # -------------------------------------------------------------- Database
+  - id: db-auth
+    title: Database rejected the login
+    category: database
+    severity: high
+    priority: 75
+    match: 'password authentication failed for user|Access denied for user|ORA-01017|Login failed for user|SQLSTATE\[28000\]'
+    notify: DBA / job owner
+    explain: >-
+      The database refused the username or password. The password was probably changed or expired,
+      the account is locked, or the job points at the wrong database.
+    fix: >-
+      Verify the credentials in the job's configuration or secret store, check whether the account
+      is locked or expired, and ask the DBA if the password was rotated.
+    examples:
+      - 'psycopg2.OperationalError: FATAL:  password authentication failed for user "etl"'
+      - "ORA-01017: invalid username/password; logon denied"
+
+  - id: db-connect
+    title: Cannot connect to the database
+    category: database
+    severity: high
+    priority: 72
+    match:
+      - 'could not connect to server'
+      - 'Can\x27t connect to MySQL server'
+      - 'ORA-12(?:154|170|514|541)'
+      - 'Login timeout expired'
+      - 'Communications link failure'
+      - 'connection to server at [^\r\n]+ failed'
+    notify: DBA / infrastructure
+    explain: >-
+      The job could not reach the database: it is down or restarting, the host, port or service
+      name is wrong, or a firewall or network issue blocks the connection.
+    fix: >-
+      Check that the database is up and accepting connections, then test connectivity from the job's
+      server. Confirm host, port and service name in the job configuration.
+    examples:
+      - "psycopg2.OperationalError: could not connect to server: Connection refused"
+      - "ORA-12541: TNS:no listener"
+
+  - id: db-connection-lost
+    title: Database connection was lost during the run
+    category: database
+    severity: high
+    priority: 70
+    match: 'ORA-0311[34]|server closed the connection unexpectedly|MySQL server has gone away|Lost connection to MySQL server'
+    notify: DBA
+    explain: >-
+      The connection was fine at first but the database (or something in between) dropped it while
+      the job was working. Causes include a database restart, a killed session, an idle timeout, or a
+      very long query.
+    fix: >-
+      Ask the DBA whether the database restarted or the session was killed. For long jobs, add
+      reconnect/retry logic or reduce the query size.
+    examples:
+      - "ORA-03113: end-of-file on communication channel"
+
+  - id: db-deadlock
+    title: Database deadlock
+    category: database
+    severity: medium
+    priority: 70
+    match: 'deadlock detected|ORA-00060|Deadlock found when trying to get lock|was deadlocked on lock'
+    notify: DBA / developer
+    explain: >-
+      Two sessions were each waiting for the other's locks, so the database cancelled one of them
+      (this job).
+    fix: >-
+      Rerun the job; deadlocks are often transient. If it repeats, check what else runs at the same
+      time on the same tables and have a developer make the access order consistent.
+    examples:
+      - "ORA-00060: deadlock detected while waiting for resource"
+
+  - id: db-lock-timeout
+    title: Database table or row is locked by someone else
+    category: database
+    severity: medium
+    priority: 70
+    match: 'Lock wait timeout exceeded|ORA-00054|canceling statement due to lock timeout|resource busy and acquire with NOWAIT'
+    notify: DBA
+    explain: >-
+      The job waited for a lock held by another session (a long transaction, another job or a
+      forgotten open session) and gave up.
+    fix: >-
+      Ask the DBA to identify the session holding the lock. Check for overlapping jobs and for
+      open transactions that were never committed.
+    examples:
+      - "ORA-00054: resource busy and acquire with NOWAIT specified or timeout expired"
+
+  - id: db-missing-object
+    title: Database table or column does not exist
+    category: database
+    severity: high
+    priority: 70
+    match:
+      - 'relation "(?P<name>[^"]+)" does not exist'
+      - 'Table \x27(?P<name>[^\x27]+)\x27 doesn\x27t exist'
+      - 'Invalid object name \x27(?P<name>[^\x27]+)\x27'
+      - 'column "(?P<name>[^"]+)" does not exist'
+      - 'Unknown column \x27(?P<name>[^\x27]+)\x27'
+      - 'ORA-00942|ORA-00904'
+    notify: DBA / developer
+    explain: >-
+      The SQL refers to a table or column ({name}) that the database does not have. Usually the job
+      points at the wrong database or schema, or a deployment or migration has not been applied.
+    fix: >-
+      Confirm the job connects to the intended database and schema, and check whether a recent
+      schema change was applied there. The name in the evidence line shows what is missing.
+    examples:
+      - 'psycopg2.errors.UndefinedTable: relation "sales_daily" does not exist'
+      - "ORA-00942: table or view does not exist"
+
+  - id: db-unique
+    title: Duplicate data rejected by the database
+    category: database
+    severity: medium
+    priority: 70
+    match: 'duplicate key value violates unique constraint|Duplicate entry|ORA-00001|Violation of (?:PRIMARY|UNIQUE) KEY constraint'
+    notify: job owner / DBA
+    explain: >-
+      The job tried to insert a row that already exists (same key). Often the job is being rerun
+      after a partial success, or the source data contains duplicates.
+    fix: >-
+      Check whether this run's data was already loaded. Make the load repeatable (delete the
+      period first, or use upsert/merge) and look for duplicates in the source.
+    examples:
+      - 'ERROR:  duplicate key value violates unique constraint "orders_pkey"'
+      - "ORA-00001: unique constraint (ETL.PK_ORDERS) violated"
+
+  - id: db-foreign-key
+    title: Data refers to a record that does not exist (foreign key)
+    category: database
+    severity: medium
+    priority: 70
+    match: 'violates foreign key constraint|ORA-0229[12]|FOREIGN KEY constraint'
+    notify: job owner / DBA
+    explain: >-
+      A row refers to a parent record that is missing (or a parent was deleted while children still
+      exist). Usually data was loaded in the wrong order or an upstream load is incomplete.
+    fix: >-
+      Check that the parent table was loaded first and that the missing key exists. Look at the
+      evidence line for the constraint name.
+    examples:
+      - 'ERROR: insert or update on table "orders" violates foreign key constraint "orders_cust_fk"'
+
+  - id: db-space
+    title: Database storage is full
+    category: database
+    severity: critical
+    priority: 75
+    match: 'ORA-016(?:50|52|53|54)|could not extend file|[Tt]ablespace [^\r\n]* full'
+    notify: DBA
+    explain: >-
+      The database ran out of room for new data (tablespace, temp space or disk).
+    fix: >-
+      Ask the DBA to add space or clean up, then rerun. Check what grew unexpectedly.
+    examples:
+      - "ORA-01653: unable to extend table ETL.ORDERS by 128 in tablespace USERS"
+
+  - id: db-too-many-connections
+    title: Database has too many connections
+    category: database
+    severity: high
+    priority: 70
+    match: 'Too many connections|ORA-0001[8]|ORA-00020|remaining connection slots are reserved|too many clients already'
+    notify: DBA
+    explain: >-
+      The database reached its connection limit. Too many jobs or applications are connected at
+      once, or connections are not being closed.
+    fix: >-
+      Rerun when load is lower, make sure the code closes connections (or uses a pool), and ask the
+      DBA to review the limit and idle sessions.
+    examples:
+      - "psycopg2.OperationalError: FATAL: sorry, too many clients already"
+
+  - id: sql-syntax
+    title: SQL statement has a syntax error
+    category: database
+    severity: medium
+    priority: 65
+    match: 'syntax error at or near|You have an error in your SQL syntax|Incorrect syntax near|ORA-009[0-9]{2}'
+    notify: developer
+    explain: >-
+      The database could not understand the SQL text. A recent change to a query broke it, or text
+      inserted into the query (a value, a table name) contains something unexpected.
+    fix: >-
+      Take the exact statement (from the log or the code), run it by hand against the database, and
+      fix the part the error points to.
+    examples:
+      - 'psycopg2.errors.SyntaxError: syntax error at or near "FROM"'
+
+  # ----------------------------------------------------------- Cloud / auth
+  - id: aws-expired-token
+    title: Cloud (AWS) credentials have expired
+    category: cloud
+    severity: high
+    priority: 75
+    match: 'ExpiredToken|security token included in the request is expired|TokenRefreshRequired|RequestExpired'
+    notify: cloud team / job owner
+    explain: >-
+      The temporary credentials used for AWS have run out. Temporary tokens last minutes to hours, so
+      a long job or a stale cached login will fail like this.
+    fix: >-
+      Refresh the credentials (re-run the login or assume-role step) just before the job starts. For
+      long jobs use a role that refreshes automatically.
+    examples:
+      - "botocore.exceptions.ClientError: An error occurred (ExpiredToken) when calling the PutObject operation"
+
+  - id: aws-no-credentials
+    title: No cloud (AWS) credentials found
+    category: cloud
+    severity: high
+    priority: 75
+    match: 'NoCredentialsError|Unable to locate credentials|NoCredentialProviders'
+    notify: cloud team / job owner
+    explain: >-
+      The job could not find any AWS credentials. Environment variables, a profile or an attached
+      role that works in your login session may not exist when the scheduler runs the job.
+    fix: >-
+      Give the job an IAM role or set the credentials explicitly in its environment. Check which
+      user and environment the scheduler uses.
+    examples:
+      - "botocore.exceptions.NoCredentialsError: Unable to locate credentials"
+
+  - id: aws-access-denied
+    title: Cloud (AWS) denied permission
+    category: cloud
+    severity: high
+    priority: 65
+    match: 'AccessDenied|not authorized to perform|UnauthorizedOperation'
+    notify: cloud team
+    explain: >-
+      The credentials are valid, but the account or role is not allowed to perform this action on
+      this resource.
+    fix: >-
+      Read which action and resource are named in the error, and ask the cloud team to grant exactly
+      that permission, or check if a policy changed recently.
+    examples:
+      - "An error occurred (AccessDenied) when calling the GetObject operation: Access Denied"
+
+  - id: aws-s3-missing
+    title: Cloud storage file or bucket does not exist
+    category: cloud
+    severity: medium
+    priority: 65
+    match: 'NoSuchKey|NoSuchBucket|The specified (?:key|bucket) does not exist'
+    notify: job owner / upstream team
+    explain: >-
+      The file (object) or bucket the job asked for is not in cloud storage. An upstream job has
+      not delivered it yet, or the name or path is wrong.
+    fix: >-
+      Check the bucket and key name and whether the upstream delivery finished.
+    examples:
+      - "botocore.errorfactory.NoSuchKey: An error occurred (NoSuchKey) when calling the GetObject operation"
+
+  - id: credential-expired
+    title: A password, token or certificate has expired
+    category: auth
+    severity: high
+    priority: 40
+    match: '(?i)(?:token|credentials?|password|session|certificate|license)[^\r\n]{0,40}\bexpired\b'
+    notify: job owner / security team
+    explain: >-
+      Something the job uses to log in or prove its identity is past its expiry date.
+    fix: >-
+      Renew or rotate it, then update wherever the job reads it from. Consider a reminder before the
+      next expiry.
+    examples:
+      - "Your password has expired. Please change it."
+
+  - id: ssh-host-key
+    title: Remote server's identity changed (SSH host key)
+    category: auth
+    severity: high
+    priority: 75
+    match: 'Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED'
+    notify: system administrator / security team
+    explain: >-
+      The remote server presented a different SSH key than the one stored on this machine. Either
+      the server was rebuilt or reinstalled, or something is impersonating it.
+    fix: >-
+      Confirm with the server owner that the change is expected, then update the known_hosts entry
+      (ssh-keygen -R host). Do not bypass the check blindly.
+    examples:
+      - "Host key verification failed."
+
+  - id: ssh-auth
+    title: SSH/SFTP login rejected
+    category: auth
+    severity: high
+    priority: 70
+    match: 'Permission denied \((?:publickey|password|keyboard)[^)]*\)|Too many authentication failures|AuthenticationException|Authentication failed'
+    notify: system administrator / partner IT
+    explain: >-
+      The remote server did not accept the job's key or password. The key or password was changed or
+      expired, the account is disabled, or the public key was never installed on the server.
+    fix: >-
+      Test the login manually with the same user and key. Check that the key is the right one and
+      is authorised on the remote side.
+    examples:
+      - "user@host: Permission denied (publickey,password)."
+
+  # --------------------------------------------------- Containers / Java / Spark
+  - id: image-pull
+    title: Container image could not be downloaded
+    category: container
+    severity: high
+    priority: 70
+    match: 'ImagePullBackOff|ErrImagePull|pull access denied|manifest unknown'
+    notify: platform team
+    explain: >-
+      The container platform could not fetch the image: wrong name or tag, the image does not exist
+      in the registry, or credentials for the registry are missing or expired.
+    fix: >-
+      Check the image name and tag, and the registry login or pull secret used by the job.
+    examples:
+      - "Back-off pulling image: ImagePullBackOff"
+
+  - id: crashloop
+    title: Container keeps crashing on start
+    category: container
+    severity: high
+    priority: 70
+    match: 'CrashLoopBackOff'
+    notify: developer / platform team
+    explain: >-
+      The container starts, fails and is restarted again and again. The real error is in the
+      container's own logs, not in this message.
+    fix: >-
+      Read the logs of the previous container run (kubectl logs --previous) and look for the first
+      error.
+    examples:
+      - "Back-off restarting failed container: CrashLoopBackOff"
+
+  - id: docker-daemon
+    title: Docker is not running or not reachable
+    category: container
+    severity: high
+    priority: 70
+    match: 'Cannot connect to the Docker daemon'
+    notify: system administrator
+    explain: >-
+      The docker command could not talk to the Docker service. It is stopped, or the current user is
+      not allowed to use it.
+    fix: >-
+      Start the service (systemctl start docker) and check that the job's user is in the docker
+      group.
+    examples:
+      - "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"
+
+  - id: java-classpath
+    title: Java class or version mismatch
+    category: java
+    severity: medium
+    priority: 70
+    match: 'ClassNotFoundException|NoClassDefFoundError|NoSuchMethodError|UnsupportedClassVersionError'
+    notify: developer
+    explain: >-
+      Java could not find a class or method it needs. A library (jar) is missing from the classpath,
+      two versions of a library clash, or the code was built for a newer Java than the one running.
+    fix: >-
+      Check the classpath and library versions, and compare java -version on this server with the
+      version the code was built for.
+    examples:
+      - "java.lang.ClassNotFoundException: org.postgresql.Driver"
+
+  - id: spark-yarn-memory
+    title: Spark executor ran out of memory
+    category: java
+    severity: high
+    priority: 70
+    match: 'Container killed by YARN for exceeding memory limits|ExecutorLostFailure'
+    notify: data platform team
+    explain: >-
+      A Spark worker used more memory than it was allowed and was killed, usually because of large
+      or uneven data per task.
+    fix: >-
+      Increase executor memory or memory overhead, increase the number of partitions, or look for
+      data skew in the failing stage.
+    examples:
+      - "Container killed by YARN for exceeding memory limits. 10.4 GB of 10 GB physical memory used."
+
+  # ----------------------------------------------------------------- Windows
+  - id: win-access-denied
+    title: Windows denied access
+    category: windows
+    severity: medium
+    priority: 55
+    match: 'Access is denied'
+    notify: system administrator
+    explain: >-
+      The Windows account running the job is not allowed to use a file, folder, share or service.
+    fix: >-
+      Check which account the scheduler runs the job as and grant it the permission on the target
+      (including network shares).
+    examples:
+      - "Access is denied."
+
+  - id: win-path-not-found
+    title: Windows could not find the file or path
+    category: windows
+    severity: medium
+    priority: 55
+    match: 'The system cannot find the (?:path|file) specified'
+    notify: job owner / upstream team
+    explain: >-
+      The job refers to a file, folder or drive that does not exist on this server, or a mapped
+      network drive that is not available to the account running the job.
+    fix: >-
+      Use full UNC paths (\\server\share\...) instead of mapped drive letters in scheduled jobs, and
+      check that the file exists.
+    examples:
+      - "The system cannot find the path specified."
